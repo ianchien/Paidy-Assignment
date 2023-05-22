@@ -2,7 +2,13 @@ package forex.services.rates
 
 import cats.Applicative
 import interpreters._
+import forex.config.OneFrameClientConfig
 
 object Interpreters {
-  def dummy[F[_]: Applicative]: Algebra[F] = new OneFrameDummy[F]()
+  def startup[F[_]: Applicative](config: OneFrameClientConfig): Algebra[F] = {
+    val oneFrameClient = new OneFrameClient[F](config)
+    oneFrameClient.autoUpdate()
+    oneFrameClient
+  }
+
 }

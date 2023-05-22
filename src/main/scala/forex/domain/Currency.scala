@@ -1,10 +1,15 @@
 package forex.domain
 
 import cats.Show
+// import scala.collection.mutable.ListBuffer
 
 sealed trait Currency
 
 object Currency {
+
+  // Supported Currency Types
+  val support = Seq[String]("AUD", "CAD", "CHF", "EUR", "GBP", "NZD", "JPY", "SGD", "USD")
+
   case object AUD extends Currency
   case object CAD extends Currency
   case object CHF extends Currency
