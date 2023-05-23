@@ -18,11 +18,12 @@ import requests.{ RequestFailedException, RequestsException }
 
 class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Algebra[F] {
 
-  val targetUrl  = "http://%s:%d/rates".format(config.host, config.port)
-  val token      = config.token
-  val timeout    = config.timeout * 1000
-  val updateFreq = config.updateFreq * 60 * 1000
-  val cache      = TrieMap[String, Rate]()
+  val targetUrl           = "http://%s:%d/rates".format(config.host, config.port)
+  val token               = config.token
+  val timeout             = config.timeout * 1000
+  val updateFreq          = config.updateFreq * 60 * 1000
+  val cache               = TrieMap[String, Rate]()
+  val supportedCurrencies = Currency.support
 
   override def get(pair: Rate.Pair): F[Error Either Rate] = {
     val key = "%s%s".format(pair.from.toString(), pair.to.toString())
@@ -30,7 +31,7 @@ class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Al
   }
 
   // Generate all possible currency pairs from supported currency list
-  private def genCurrencyPairs(supportedCurrencies: Seq[String]): List[String] = {
+  private[interpreters] def genCurrencyPairs(supportedCurrencies: Seq[String]): List[String] = {
     val pairs = new ListBuffer[String]()
     for {
       l <- supportedCurrencies
@@ -41,7 +42,7 @@ class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Al
   }
 
   // Convert json object to Rate
-  private def jsonToRate(jsonItem: Value): Either[Exception, Rate] =
+  private[interpreters] def jsonToRate(jsonItem: Value): Either[Exception, Rate] =
     try {
       val from: String      = jsonItem("from").str
       val to: String        = jsonItem("to").str
@@ -59,8 +60,8 @@ class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Al
     }
 
   // Get all currencies rate from One-Frame server
-  def getAllRatesFromOneFrame: Either[RequestsException, Response] = {
-    val currencyPairs = this.genCurrencyPairs(Currency.support)
+  def getAllRatesFromOneFrame(currencies: Seq[String]): Either[RequestsException, Response] = {
+    val currencyPairs = this.genCurrencyPairs(currencies)
     val params = {
       val listBuf = new ListBuffer[(String, String)]()
       for (currencyPair <- currencyPairs)
@@ -89,7 +90,7 @@ class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Al
   // Update Rates to Cache every 3 minutes
   def autoUpdate() = {
     def updater =
-      getAllRatesFromOneFrame match {
+      getAllRatesFromOneFrame(supportedCurrencies) match {
         case Left(e) => Error.OneFrameInternalFailed(e.message)
         case Right(r) =>
           val json = ujson.read(r)
