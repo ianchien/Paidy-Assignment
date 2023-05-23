@@ -12,16 +12,17 @@ import scala.collection.mutable.ListBuffer
 import scala.collection.concurrent.TrieMap
 
 // import cats.effect.IO
-import requests.Response
+import requests._
 import ujson.Value
+import requests.{ RequestFailedException, RequestsException }
 
 class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Algebra[F] {
 
-  val targetUrl = "http://%s:%d/rates".format(config.host, config.port)
-  val token     = config.token
-  val timeout = config.timeout * 1000
-  val updateFreq  = config.updateFreq * 60 * 1000
-  val cache     = TrieMap[String, Rate]()
+  val targetUrl  = "http://%s:%d/rates".format(config.host, config.port)
+  val token      = config.token
+  val timeout    = config.timeout * 1000
+  val updateFreq = config.updateFreq * 60 * 1000
+  val cache      = TrieMap[String, Rate]()
 
   override def get(pair: Rate.Pair): F[Error Either Rate] = {
     val key = "%s%s".format(pair.from.toString(), pair.to.toString())
@@ -40,20 +41,25 @@ class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Al
   }
 
   // Convert json object to Rate
-  private def jsonToRate(jsonItem: Value): Rate = {
-    val from: String      = jsonItem("from").str
-    val to: String        = jsonItem("to").str
-    val price: Double     = jsonItem("price").num
-    val timestamp: String = jsonItem("time_stamp").str
-    Rate(
-      Rate.Pair(Currency.fromString(from), Currency.fromString(to)),
-      Price(BigDecimal(price)),
-      Timestamp.fromString(timestamp)
-    )
-  }
+  private def jsonToRate(jsonItem: Value): Either[Exception, Rate] =
+    try {
+      val from: String      = jsonItem("from").str
+      val to: String        = jsonItem("to").str
+      val price: Double     = jsonItem("price").num
+      val timestamp: String = jsonItem("time_stamp").str
+      Right(
+        Rate(
+          Rate.Pair(Currency.fromString(from), Currency.fromString(to)),
+          Price(BigDecimal(price)),
+          Timestamp.fromString(timestamp)
+        )
+      )
+    } catch {
+      case e: Exception => Left(e)
+    }
 
   // Get all currencies rate from One-Frame server
-  def getAllRatesFromOneFrame: Response = {
+  def getAllRatesFromOneFrame: Either[RequestsException, Response] = {
     val currencyPairs = this.genCurrencyPairs(Currency.support)
     val params = {
       val listBuf = new ListBuffer[(String, String)]()
@@ -62,30 +68,44 @@ class OneFrameClient[F[_]: Applicative](config: OneFrameClientConfig) extends Al
       listBuf.toList
     }
 
-    val res: Response = requests.get(
-      this.targetUrl,
-      params = params,
-      headers = Map("token" -> this.token),
-      connectTimeout = config.timeout
-    )
-    res
+    try {
+      val res: Response = requests.get(
+        this.targetUrl,
+        params = params,
+        headers = Map("token" -> this.token),
+        connectTimeout = config.timeout
+      )
+      if (!res.is2xx) {
+        Left(new RequestFailedException(res))
+      } else {
+        Right(res)
+      }
+    } catch {
+      case e: RequestsException =>
+        Left(e)
+    }
   }
 
   // Update Rates to Cache every 3 minutes
   def autoUpdate() = {
-    def updater() = {
-      val res  = getAllRatesFromOneFrame
-      val json = ujson.read(res.text())
-      for (item <- json.arr) {
-        val rate = jsonToRate(item)
-        val key  = "%s%s".format(rate.pair.from.toString(), rate.pair.to.toString())
-        cache += (key -> rate)
+    def updater =
+      getAllRatesFromOneFrame match {
+        case Left(e) => Error.OneFrameInternalFailed(e.message)
+        case Right(r) =>
+          val json = ujson.read(r)
+          for (item <- json.arr)
+            jsonToRate(item) match {
+              case Left(e) => Error.OneFrameInternalFailed(e.toString())
+              case Right(rate) =>
+                val key = "%s%s".format(rate.pair.from.toString(), rate.pair.to.toString())
+                cache += (key -> rate)
+            }
       }
-    }
+
     val thread = new Thread {
       override def run: Unit =
         while (true) {
-          updater()
+          updater
           Thread.sleep(updateFreq.toLong) // 3 minutes
         }
     }
